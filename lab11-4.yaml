@@ -1,0 +1,216 @@
+Mappings:
+  AWSRegionArch2AMI:
+    ap-southeast-2:
+      HVM64: ami-dc361ebf
+      HOST: SYDNEY
+      VPC: SYDNEY-VPC
+      IGW: SYDNEY-IGW
+      RT: SYDNEY-Public-RT
+      SN1: SYDNEY-Public-SN-1
+      SN2: SYDNEY-Public-SN-2
+      EC21: SYDNEY-EC2-1
+      EC22: SYDNEY-EC2-2
+    sa-east-1:
+      HVM64: ami-6dd04501
+      HOST: SAOPAULO
+      VPC: SAOPAULO-VPC
+      IGW: SAOPAULO-IGW
+      RT: SAOPAULO-Public-RT
+      SN1: SAOPAULO-Public-SN-1
+      SN2: SAOPAULO-Public-SN-2
+      EC21: SAOPAULO-EC2-1
+      EC22: SAOPAULO-EC2-2
+
+Conditions:
+  CreateSydneyResources: !Equals [ !Ref 'AWS::Region', ap-southeast-2 ]
+
+Resources:
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      Tags:
+        - Key: Name
+          Value: !FindInMap [AWSRegionArch2AMI, !Ref 'AWS::Region', VPC]
+
+  MyIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !FindInMap [AWSRegionArch2AMI, !Ref 'AWS::Region', IGW]
+
+  MyIGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref MyIGW
+      VpcId: !Ref MyVPC
+
+  MyPublicRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: !FindInMap [AWSRegionArch2AMI, !Ref 'AWS::Region', RT]
+
+  MyDefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: MyIGWAttachment
+    Properties:
+      RouteTableId: !Ref MyPublicRT
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref MyIGW
+
+  MyPublicSN1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 10.0.0.0/24
+      Tags:
+        - Key: Name
+          Value: !FindInMap [AWSRegionArch2AMI, !Ref 'AWS::Region', SN1]
+
+  MyPublicSN2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      AvailabilityZone: !Select [ 2, !GetAZs '' ]
+      CidrBlock: 10.0.1.0/24
+      Tags:
+        - Key: Name
+          Value: !FindInMap [AWSRegionArch2AMI, !Ref 'AWS::Region', SN2]
+
+  MyPublicSNRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref MyPublicRT
+      SubnetId: !Ref MyPublicSN1
+
+  MyPublicSNRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref MyPublicRT
+      SubnetId: !Ref MyPublicSN2
+
+  WEBSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access via port 80 and SSH access via port 22
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: WEB-SG
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+
+  MyEC21:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: !FindInMap [AWSRegionArch2AMI, !Ref 'AWS::Region', HVM64]
+      Tags:
+        - Key: Name
+          Value: !FindInMap [AWSRegionArch2AMI, !Ref 'AWS::Region', EC21]
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref MyPublicSN1
+          GroupSet:
+          - !Ref WEBSG
+          AssociatePublicIpAddress: true
+      UserData:
+        Fn::Base64: !Sub
+          - |+
+            #!/bin/bash -v
+            (
+            echo "qwe123"
+            echo "qwe123"
+            ) | passwd --stdin root
+            sed -i "s/^PasswordAuthentication no/PasswordAuthentication yes/g" /etc/ssh/sshd_config
+            sed -i "s/^#PermitRootLogin yes/PermitRootLogin yes/g" /etc/ssh/sshd_config
+            service sshd restart
+            hostname ${host}-EC2-1
+            yum install httpd -y
+            service httpd start
+            chkconfig httpd on
+            echo "<h1>CloudNeta ${host} Web Server_1</h1>" > /var/www/html/index.html
+          - host:
+              Fn::FindInMap: [AWSRegionArch2AMI, Ref: 'AWS::Region', HOST]
+
+  MyEC22:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: !FindInMap [AWSRegionArch2AMI, !Ref 'AWS::Region', HVM64]
+      Tags:
+        - Key: Name
+          Value: !FindInMap [AWSRegionArch2AMI, !Ref 'AWS::Region', EC22]
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref MyPublicSN2
+          GroupSet:
+          - !Ref WEBSG
+          AssociatePublicIpAddress: true
+      UserData:
+        Fn::Base64: !Sub
+          - |+
+            #!/bin/bash -v
+            (
+            echo "qwe123"
+            echo "qwe123"
+            ) | passwd --stdin root
+            sed -i "s/^PasswordAuthentication no/PasswordAuthentication yes/g" /etc/ssh/sshd_config
+            sed -i "s/^#PermitRootLogin yes/PermitRootLogin yes/g" /etc/ssh/sshd_config
+            service sshd restart
+            hostnamectl --static set-hostname ${host}-EC2-2
+            yum install httpd -y
+            service httpd start
+            chkconfig httpd on
+            echo "<h1>CloudNeta ${host} Web Server_2</h1>" > /var/www/html/index.html
+          - host:
+              Fn::FindInMap: [AWSRegionArch2AMI, Ref: 'AWS::Region', HOST]
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: CreateSydneyResources
+    Properties:
+      Name: ALB-TG
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref MyVPC
+      Targets:
+        - Id: !Ref MyEC21
+          Port: 80
+        - Id: !Ref MyEC22
+          Port: 80
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Condition: CreateSydneyResources
+    Properties:
+      Name: SYDNEY-ALB
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref WEBSG
+      Subnets:
+        - !Ref MyPublicSN1
+        - !Ref MyPublicSN2
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: CreateSydneyResources
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
