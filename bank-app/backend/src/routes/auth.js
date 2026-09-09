@@ -38,7 +38,7 @@ router.post("/signup", async (req, res) => {
     id: uuid(),
     userId: user.id,
     accountNumber: generateAccountNumber(),
-    name: "입출금 계좌",
+    name: "정기예금",
     balance: 0,
     createdAt: new Date().toISOString(),
   };

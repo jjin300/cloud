@@ -32,7 +32,7 @@ export default function Signup() {
       <form className="auth-card" onSubmit={handleSubmit}>
         <img src="/favicon.svg" alt="MuriBank" className="auth-logo" />
         <h1>회원가입</h1>
-        <p className="subtitle">가입 즉시 가상 입출금 계좌가 자동으로 만들어집니다.</p>
+        <p className="subtitle">가입 즉시 가상 정기예금 계좌가 자동으로 만들어집니다.</p>
         {error && <div className="error-box">{error}</div>}
         <label>
           이름
