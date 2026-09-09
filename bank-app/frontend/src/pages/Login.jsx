@@ -29,7 +29,8 @@ export default function Login() {
   return (
     <div className="auth-page">
       <form className="auth-card" onSubmit={handleSubmit}>
-        <h1>모의은행</h1>
+        <img src="/favicon.svg" alt="MuriBank" className="auth-logo" />
+        <h1>MuriBank</h1>
         <p className="subtitle">실제 자금이 오가지 않는 가상 은행 서비스입니다.</p>
         {error && <div className="error-box">{error}</div>}
         <label>

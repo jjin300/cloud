@@ -86,9 +86,25 @@ a {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 18px;
   font-weight: 700;
   color: var(--text);
+}
+
+.brand-logo {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+
+.auth-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  margin-bottom: 4px;
 }
 
 .navbar-right {

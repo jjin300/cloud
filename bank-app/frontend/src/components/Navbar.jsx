@@ -13,7 +13,8 @@ export default function Navbar() {
   return (
     <header className="navbar">
       <Link to="/" className="brand">
-        🏦 모의은행
+        <img src="/favicon.svg" alt="MuriBank" className="brand-logo" />
+        MuriBank
       </Link>
       {user && (
         <div className="navbar-right">
