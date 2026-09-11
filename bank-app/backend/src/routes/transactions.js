@@ -1,14 +1,10 @@
 import express from "express";
 import { v4 as uuid } from "uuid";
-import { db } from "../db.js";
+import { query, withTransaction } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 router.use(requireAuth);
-
-function findOwnAccount(accountId, userId) {
-  return db.accounts.find((a) => a.id === accountId && a.userId === userId);
-}
 
 function parseAmount(raw) {
   const amount = Number(raw);
@@ -16,147 +12,221 @@ function parseAmount(raw) {
   return Math.round(amount);
 }
 
-function recordTransaction({ accountId, type, amount, balanceAfter, memo, counterpartAccountNumber, counterpartName }) {
-  const tx = {
-    id: uuid(),
-    accountId,
-    type,
-    amount,
-    balanceAfter,
-    memo: memo ? String(memo).trim().slice(0, 100) : "",
-    counterpartAccountNumber: counterpartAccountNumber || null,
-    counterpartName: counterpartName || null,
-    createdAt: new Date().toISOString(),
+function toPublicTransaction(row) {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    type: row.type,
+    amount: Number(row.amount),
+    balanceAfter: Number(row.balance_after),
+    memo: row.memo || "",
+    counterpartAccountNumber: row.counterpart_account_number,
+    counterpartName: row.counterpart_name,
+    createdAt: row.created_at,
   };
-  db.transactions.push(tx);
-  return tx;
 }
 
-router.post("/:accountId/deposit", (req, res) => {
-  const account = findOwnAccount(req.params.accountId, req.userId);
-  if (!account) return res.status(404).json({ error: "계좌를 찾을 수 없습니다." });
+async function insertTransaction(client, { accountId, type, amount, balanceAfter, memo, counterpartAccountNumber, counterpartName }) {
+  const result = await client.query(
+    `INSERT INTO transactions
+      (id, account_id, type, amount, balance_after, memo, counterpart_account_number, counterpart_name)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [
+      uuid(),
+      accountId,
+      type,
+      amount,
+      balanceAfter,
+      memo ? String(memo).trim().slice(0, 100) : "",
+      counterpartAccountNumber || null,
+      counterpartName || null,
+    ]
+  );
+  return result.rows[0];
+}
 
+router.post("/:accountId/deposit", async (req, res) => {
   const amount = parseAmount(req.body?.amount);
   if (!amount) return res.status(400).json({ error: "올바른 입금 금액을 입력해주세요." });
 
-  account.balance += amount;
-  const tx = recordTransaction({
-    accountId: account.id,
-    type: "deposit",
-    amount,
-    balanceAfter: account.balance,
-    memo: req.body?.memo,
-  });
-  db.save();
-  res.status(201).json({ balance: account.balance, transaction: tx });
+  try {
+    const { tx, balance } = await withTransaction(async (client) => {
+      const accountResult = await client.query(
+        "SELECT * FROM accounts WHERE id = $1 AND user_id = $2 FOR UPDATE",
+        [req.params.accountId, req.userId]
+      );
+      const account = accountResult.rows[0];
+      if (!account) throw { status: 404, message: "계좌를 찾을 수 없습니다." };
+
+      const newBalance = Number(account.balance) + amount;
+      await client.query("UPDATE accounts SET balance = $1 WHERE id = $2", [newBalance, account.id]);
+      const txRow = await insertTransaction(client, {
+        accountId: account.id,
+        type: "deposit",
+        amount,
+        balanceAfter: newBalance,
+        memo: req.body?.memo,
+      });
+      return { tx: txRow, balance: newBalance };
+    });
+    res.status(201).json({ balance, transaction: toPublicTransaction(tx) });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
 });
 
-router.post("/:accountId/withdraw", (req, res) => {
-  const account = findOwnAccount(req.params.accountId, req.userId);
-  if (!account) return res.status(404).json({ error: "계좌를 찾을 수 없습니다." });
-
+router.post("/:accountId/withdraw", async (req, res) => {
   const amount = parseAmount(req.body?.amount);
   if (!amount) return res.status(400).json({ error: "올바른 출금 금액을 입력해주세요." });
-  if (amount > account.balance) {
-    return res.status(400).json({ error: "잔액이 부족합니다." });
-  }
 
-  account.balance -= amount;
-  const tx = recordTransaction({
-    accountId: account.id,
-    type: "withdraw",
-    amount,
-    balanceAfter: account.balance,
-    memo: req.body?.memo,
-  });
-  db.save();
-  res.status(201).json({ balance: account.balance, transaction: tx });
+  try {
+    const { tx, balance } = await withTransaction(async (client) => {
+      const accountResult = await client.query(
+        "SELECT * FROM accounts WHERE id = $1 AND user_id = $2 FOR UPDATE",
+        [req.params.accountId, req.userId]
+      );
+      const account = accountResult.rows[0];
+      if (!account) throw { status: 404, message: "계좌를 찾을 수 없습니다." };
+      if (amount > Number(account.balance)) {
+        throw { status: 400, message: "잔액이 부족합니다." };
+      }
+
+      const newBalance = Number(account.balance) - amount;
+      await client.query("UPDATE accounts SET balance = $1 WHERE id = $2", [newBalance, account.id]);
+      const txRow = await insertTransaction(client, {
+        accountId: account.id,
+        type: "withdraw",
+        amount,
+        balanceAfter: newBalance,
+        memo: req.body?.memo,
+      });
+      return { tx: txRow, balance: newBalance };
+    });
+    res.status(201).json({ balance, transaction: toPublicTransaction(tx) });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
 });
 
-router.post("/transfer", (req, res) => {
+router.post("/transfer", async (req, res) => {
   const { fromAccountId, toAccountNumber, amount: rawAmount, memo } = req.body || {};
-
-  const fromAccount = findOwnAccount(fromAccountId, req.userId);
-  if (!fromAccount) return res.status(404).json({ error: "출금 계좌를 찾을 수 없습니다." });
-
-  const toAccount = db.accounts.find((a) => a.accountNumber === toAccountNumber);
-  if (!toAccount) return res.status(404).json({ error: "존재하지 않는 수취 계좌번호입니다." });
-  if (toAccount.id === fromAccount.id) {
-    return res.status(400).json({ error: "같은 계좌로는 이체할 수 없습니다." });
-  }
-
   const amount = parseAmount(rawAmount);
   if (!amount) return res.status(400).json({ error: "올바른 이체 금액을 입력해주세요." });
-  if (amount > fromAccount.balance) {
-    return res.status(400).json({ error: "잔액이 부족합니다." });
+
+  try {
+    const { tx, balance } = await withTransaction(async (client) => {
+      const fromResult = await client.query(
+        "SELECT * FROM accounts WHERE id = $1 AND user_id = $2 FOR UPDATE",
+        [fromAccountId, req.userId]
+      );
+      const fromAccount = fromResult.rows[0];
+      if (!fromAccount) throw { status: 404, message: "출금 계좌를 찾을 수 없습니다." };
+
+      // 데드락 방지를 위해 계좌 id 순으로 잠금 순서를 고정
+      const toResultBeforeLock = await client.query("SELECT id FROM accounts WHERE account_number = $1", [
+        toAccountNumber,
+      ]);
+      const toId = toResultBeforeLock.rows[0]?.id;
+      if (!toId) throw { status: 404, message: "존재하지 않는 수취 계좌번호입니다." };
+      if (toId === fromAccount.id) throw { status: 400, message: "같은 계좌로는 이체할 수 없습니다." };
+
+      const [firstId, secondId] = [fromAccount.id, toId].sort();
+      await client.query("SELECT id FROM accounts WHERE id = $1 FOR UPDATE", [firstId]);
+      await client.query("SELECT id FROM accounts WHERE id = $1 FOR UPDATE", [secondId]);
+
+      const toResult = await client.query("SELECT * FROM accounts WHERE id = $1", [toId]);
+      const toAccount = toResult.rows[0];
+
+      if (amount > Number(fromAccount.balance)) throw { status: 400, message: "잔액이 부족합니다." };
+
+      const fromUserResult = await client.query("SELECT name FROM users WHERE id = $1", [fromAccount.user_id]);
+      const toUserResult = await client.query("SELECT name FROM users WHERE id = $1", [toAccount.user_id]);
+
+      const fromNewBalance = Number(fromAccount.balance) - amount;
+      const toNewBalance = Number(toAccount.balance) + amount;
+
+      await client.query("UPDATE accounts SET balance = $1 WHERE id = $2", [fromNewBalance, fromAccount.id]);
+      await client.query("UPDATE accounts SET balance = $1 WHERE id = $2", [toNewBalance, toAccount.id]);
+
+      const outTx = await insertTransaction(client, {
+        accountId: fromAccount.id,
+        type: "transfer_out",
+        amount,
+        balanceAfter: fromNewBalance,
+        memo,
+        counterpartAccountNumber: toAccount.account_number,
+        counterpartName: toUserResult.rows[0]?.name,
+      });
+      await insertTransaction(client, {
+        accountId: toAccount.id,
+        type: "transfer_in",
+        amount,
+        balanceAfter: toNewBalance,
+        memo,
+        counterpartAccountNumber: fromAccount.account_number,
+        counterpartName: fromUserResult.rows[0]?.name,
+      });
+
+      return { tx: outTx, balance: fromNewBalance };
+    });
+    res.status(201).json({ balance, transaction: toPublicTransaction(tx) });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    throw err;
   }
-
-  const fromOwner = db.users.find((u) => u.id === fromAccount.userId);
-  const toOwner = db.users.find((u) => u.id === toAccount.userId);
-
-  fromAccount.balance -= amount;
-  toAccount.balance += amount;
-
-  const outTx = recordTransaction({
-    accountId: fromAccount.id,
-    type: "transfer_out",
-    amount,
-    balanceAfter: fromAccount.balance,
-    memo,
-    counterpartAccountNumber: toAccount.accountNumber,
-    counterpartName: toOwner ? toOwner.name : null,
-  });
-  recordTransaction({
-    accountId: toAccount.id,
-    type: "transfer_in",
-    amount,
-    balanceAfter: toAccount.balance,
-    memo,
-    counterpartAccountNumber: fromAccount.accountNumber,
-    counterpartName: fromOwner ? fromOwner.name : null,
-  });
-
-  db.save();
-  res.status(201).json({ balance: fromAccount.balance, transaction: outTx });
 });
 
-router.get("/:accountId", (req, res) => {
-  const account = findOwnAccount(req.params.accountId, req.userId);
-  if (!account) return res.status(404).json({ error: "계좌를 찾을 수 없습니다." });
+router.get("/:accountId", async (req, res) => {
+  const accountResult = await query("SELECT id FROM accounts WHERE id = $1 AND user_id = $2", [
+    req.params.accountId,
+    req.userId,
+  ]);
+  if (!accountResult.rows[0]) return res.status(404).json({ error: "계좌를 찾을 수 없습니다." });
 
   const { type, search, from, to } = req.query;
-  let list = db.transactions.filter((t) => t.accountId === account.id);
+  const conditions = ["account_id = $1"];
+  const params = [req.params.accountId];
 
   if (type && type !== "all") {
-    list = list.filter((t) => t.type === type);
+    params.push(type);
+    conditions.push(`type = $${params.length}`);
   }
   if (search) {
-    const term = String(search).toLowerCase();
-    list = list.filter(
-      (t) =>
-        (t.memo || "").toLowerCase().includes(term) ||
-        (t.counterpartName || "").toLowerCase().includes(term) ||
-        (t.counterpartAccountNumber || "").toLowerCase().includes(term)
+    params.push(`%${search}%`);
+    const idx = params.length;
+    conditions.push(
+      `(memo ILIKE $${idx} OR counterpart_name ILIKE $${idx} OR counterpart_account_number ILIKE $${idx})`
     );
   }
   if (from) {
-    const fromTime = new Date(from).getTime();
-    list = list.filter((t) => new Date(t.createdAt).getTime() >= fromTime);
+    params.push(from);
+    conditions.push(`created_at >= $${params.length}::date`);
   }
   if (to) {
-    const toTime = new Date(to).getTime() + 24 * 60 * 60 * 1000 - 1;
-    list = list.filter((t) => new Date(t.createdAt).getTime() <= toTime);
+    params.push(to);
+    conditions.push(`created_at < ($${params.length}::date + interval '1 day')`);
   }
 
-  list = [...list].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const whereClause = conditions.join(" AND ");
+
+  const countResult = await query(`SELECT COUNT(*) FROM transactions WHERE ${whereClause}`, params);
+  const total = Number(countResult.rows[0].count);
 
   const page = Math.max(1, Number(req.query.page) || 1);
   const pageSize = Math.min(50, Math.max(1, Number(req.query.pageSize) || 10));
-  const total = list.length;
-  const start = (page - 1) * pageSize;
-  const pageItems = list.slice(start, start + pageSize);
+  const offset = (page - 1) * pageSize;
 
-  res.json({ transactions: pageItems, total, page, pageSize });
+  const listParams = [...params, pageSize, offset];
+  const listResult = await query(
+    `SELECT * FROM transactions WHERE ${whereClause}
+     ORDER BY created_at DESC
+     LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`,
+    listParams
+  );
+
+  res.json({ transactions: listResult.rows.map(toPublicTransaction), total, page, pageSize });
 });
 
 export default router;

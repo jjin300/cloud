@@ -1,6 +1,8 @@
 import "dotenv/config";
 import express from "express";
+import "express-async-errors";
 import cors from "cors";
+import { initSchema } from "./db.js";
 import authRoutes from "./routes/auth.js";
 import accountRoutes from "./routes/accounts.js";
 import transactionRoutes from "./routes/transactions.js";
@@ -21,6 +23,18 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "서버 오류가 발생했습니다." });
 });
 
-app.listen(PORT, () => {
-  console.log(`Mock bank API listening on http://localhost:${PORT}`);
-});
+if (!process.env.DATABASE_URL) {
+  console.error("DATABASE_URL 환경변수가 설정되지 않았습니다.");
+  process.exit(1);
+}
+
+initSchema()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Mock bank API listening on http://localhost:${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error("데이터베이스 초기화 실패:", err);
+    process.exit(1);
+  });

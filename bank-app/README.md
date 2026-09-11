@@ -11,21 +11,25 @@
 
 ## 기술 스택
 
-- Backend: Node.js, Express, JWT, bcrypt — JSON 파일 기반 저장소 (`backend/data.json`, 자동 생성)
+- Backend: Node.js, Express, JWT, bcrypt, PostgreSQL (pg)
 - Frontend: React (Vite), React Router, Axios
 
 ## 실행 방법
 
-### 1. 백엔드
+### 1. 데이터베이스 준비
+
+PostgreSQL 접속 정보(`DATABASE_URL`)가 필요합니다. 로컬 Postgres를 쓰거나, [Neon](https://neon.tech) 같은 무료 클라우드 Postgres를 사용하면 됩니다. 테이블은 서버가 처음 시작할 때 자동으로 생성됩니다(별도 마이그레이션 불필요).
+
+### 2. 백엔드
 
 ```bash
 cd backend
-cp .env.example .env   # 필요시 값 수정
+cp .env.example .env   # DATABASE_URL, JWT_SECRET 값 입력
 npm install
 npm run dev             # http://localhost:4000
 ```
 
-### 2. 프론트엔드
+### 3. 프론트엔드
 
 ```bash
 cd frontend
@@ -38,4 +42,4 @@ npm run dev              # http://localhost:5173
 ## 참고
 
 - 모든 데이터는 가상이며 실제 금융기관과 연동되지 않습니다.
-- 데이터는 `backend/data.json` 파일에 저장됩니다(데모/개발용 저장소). 삭제하면 모든 계정/거래 내역이 초기화됩니다.
+- 계정/계좌/거래 내역은 PostgreSQL 데이터베이스에 영구 저장됩니다. (배포 환경에서 서버가 재시작되어도 데이터가 유지됩니다.)
